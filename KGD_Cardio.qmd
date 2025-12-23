@@ -58,7 +58,7 @@ parse_dates <- function(dates) {
   as.POSIXct(result, origin = "1970-01-01", tz = "UTC")
 }
 
-# NEW: детектор "зелёного" по ARGB (FFRRGGBB)
+# Детектор "зелёного" по ARGB (FFRRGGBB)
 is_green_rgb <- function(rgb) {
   if (is.na(rgb) || !nzchar(rgb)) return(FALSE)
   rgb <- toupper(rgb)
@@ -149,7 +149,7 @@ process_file <- function(file_path) {
     }
   }
 
-  # NEW: death_green по цвету шрифта в колонке "ФИО"
+  # death_green по цвету шрифта в колонке "ФИО"
   death_green <- rep(0L, nrow(data))
 
   # строки в Excel (в терминах tidyxl): header = row 1, данные начинаются с row 2
