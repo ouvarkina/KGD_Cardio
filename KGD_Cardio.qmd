@@ -193,11 +193,11 @@ final_dataset <- all_data %>%
   mutate(
     age = as.numeric(str_replace(age, ",", ".")),
 
-    across(c(high, ICU_dur_exl, adrenaline, noradrenaline,
+    across(c(high, adrenaline, noradrenaline,
              dopamine, dobutamine, MV, SOFA),
            ~ as.numeric(str_replace(.x, ",", "."))),
 
-    across(c(sex, recordID, revasc_history, surgery, re_admission,
+    across(c(sex, recordID, ICU_dur_exl, revasc_history, surgery, re_admission,
              RRT, CBP, sepsis, death, outcome), as.character),
 
     high = ifelse(high > 100, high / 100, high),
@@ -238,6 +238,7 @@ final_dataset <- all_data %>%
     admissionDateTime, # дата и время госпитализации
     ICU_EndDateTime, # дата перевода из ОАР№2
     ICU_dur_calc, # разность между "дата и время госпитализации" и "дата перевода из ОАР№2"
+    ICU_dur_exl, #пребывание в орит, часы (как есть в Excel)
     revasc_history, # реваскуляризация в анамнезе (0-нет, 1-АКШ, 2-ЧКВ, если АКШ+ЧКВ - 3, 4-неизвестно)
     surgery, # ОПЕРАЦИЯ, название (включая БАП)
     re_admission, # повторное поступление (0-нет, 1 - да)
