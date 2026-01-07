@@ -1,0 +1,298 @@
+---
+title: "KGD_Cardio simple"
+format: html
+editor: visual
+---
+
+```{r}
+
+# =========================
+# ОКС: сбор датасета 
+# =========================
+
+# source("lib/setup.R") # если нужно
+
+library(readxl)
+library(dplyr)
+library(purrr)
+library(stringr)
+library(tibble)
+
+# =========================
+# ФАЙЛЫ + ЛИСТЫ + РЕЖИМ ГОДА
+# =========================
+files <- tibble::tibble(
+  file_path = c(
+    "ОКС. База 2025.xlsm",
+    "ОКС. База 2024.xlsx",
+    "ОКС. База 2023.xlsx",
+    "ОКС. База 2022.xlsx",
+    "ОКС. База 2021.xlsx",
+    "ОКС. База 2020.xlsx",
+    "ОКС. База 2019.xlsx",
+    "ОКС. База 2017 самая полная.xlsx",
+    "окс база 2014-2016.xlsx"
+  ),
+  sheet_name = c(
+    "ОКС все",
+    "ОКС все",
+    "ОКС все",
+    "ОКС все",
+    "ОКС все",
+    "ОКС с реваскуляризацией",
+    "ОКС с реваскуляризацией",
+    "ОКС",
+    "все"
+  ),
+  year_mode = c(rep("filename", 8), "admission"),
+  sheet_id = c(1,1,1,1,1, 1,1, 1,1)
+) %>%
+  bind_rows(
+    tibble::tibble(
+      file_path = c("ОКС. База 2020.xlsx", "ОКС. База 2019.xlsx"),
+      sheet_name = c("ОКС без реваскуляризации", "ОКС без реваскуляризации"),
+      year_mode = c("filename", "filename"),
+      sheet_id = c(2, 2)
+    )
+  )
+
+# =========================
+# ПАРСИНГ ДАТ
+# =========================
+parse_dates <- function(dates) {
+  result <- rep(NA, length(dates))
+
+  for (i in seq_along(dates)) {
+    val <- dates[i]
+    if (is.na(val) || val == "") next
+
+    formats <- c(
+      "%Y-%m-%d %H:%M:%S",
+      "%d.%m.%Y %H:%M:%S",
+      "%d.%m.%Y %H:%M",
+      "%Y-%m-%d",
+      "%d.%m.%Y"
+    )
+
+    parsed <- NA
+    for (fmt in formats) {
+      try_date <- try(as.POSIXct(val, format = fmt), silent = TRUE)
+      if (!inherits(try_date, "try-error") && !is.na(try_date)) {
+        parsed <- try_date
+        break
+      }
+    }
+
+    if (is.na(parsed)) {
+      num_val <- suppressWarnings(as.numeric(val))
+      if (!is.na(num_val)) {
+        parsed <- as.POSIXct((num_val - 25569) * 86400, origin = "1970-01-01", tz = "UTC")
+      }
+    }
+
+    result[i] <- parsed
+  }
+
+  as.POSIXct(result, origin = "1970-01-01", tz = "UTC")
+}
+
+# =========================
+# ОБРАБОТКА ОДНОГО ФАЙЛА
+# =========================
+process_file <- function(file_path, sheet_name, year_mode = c("filename", "admission"), sheet_id = 1) {
+  year_mode <- match.arg(year_mode)
+
+  if (!file.exists(file_path)) return(NULL)
+
+  year <- if (year_mode == "filename") {
+    stringr::str_extract(file_path, "\\d{4}")
+  } else {
+    NA_character_
+  }
+
+  raw_data <- read_excel(file_path, sheet = sheet_name, col_types = "text")
+
+  # фильтрация по непустому ФИО
+  fio_names <- stringr::str_to_upper(stringr::str_trim(names(raw_data)))
+  fio_col_idx <- which(fio_names == "ФИО")[1]
+  if (is.na(fio_col_idx)) fio_col_idx <- which(stringr::str_detect(fio_names, "ФИО"))[1]
+  if (is.na(fio_col_idx)) return(NULL)
+
+  keep <- !is.na(raw_data[[fio_col_idx]]) & stringr::str_trim(raw_data[[fio_col_idx]]) != ""
+  data <- raw_data[keep, , drop = FALSE]
+  if (nrow(data) == 0) return(NULL)
+
+  find_col <- function(names_vec, patterns) {
+    for (pattern in patterns) if (pattern %in% names_vec) return(pattern)
+    NULL
+  }
+
+  # ВАЖНО: exl_row должен ссылаться на исходную строку Excel
+  kept_rows_excel <- which(keep) + 1L  # header = row 1
+result <- tibble(
+  year = year,
+  exl_sheet = sheet_id,
+  exl_row = kept_rows_excel
+  )
+
+  add_col <- function(result, data, col_name, patterns) {
+    found <- find_col(names(data), patterns)
+    result[[col_name]] <- if (!is.null(found)) data[[found]] else NA_character_
+    result
+  }
+
+  result <- add_col(result, data, "age", c("возраст, годы", "возр.", "возраст"))
+  result <- add_col(result, data, "high", c("рост, м", "рост"))
+  result <- add_col(result, data, "sex", c("пол (ж или м)", "пол м/ж", "пол"))
+  result <- add_col(result, data, "recordID", c("№ИБ (без указания года)", "№ИБ", "ИБ", "№ИСТОРИИ"))
+  result <- add_col(
+    result, data, "admissionDateTime",
+    c("дата и время госпитализации", "дата госпитализации", "ДАТА ГОСПИТАЛИЗАЦИИ", "дата госпитал-и")
+  )
+  result <- add_col(
+    result, data, "ICU_EndDateTime",
+    c("дата перевода из ОАР№2", "перевод из ОАР", "Время перевода", "перевод")
+  )
+  result <- add_col(result, data, "ICU_dur_exl", c("пребывание в орит, часы", "пребывание в ОРИТ"))
+  result <- add_col(result, data, "adrenaline", c("адреналин (0-нет, да - доза, мкг/кг/мин)", "адреналин", "адреналин 1"))
+  result <- add_col(result, data, "noradrenaline", c("НА (0-нет, 1 - доза, мкг/кг/мин)", "НА", "норадреналин1"))
+  result <- add_col(result, data, "dopamine", c("допмин (0-нет, да - доза, мкг/кг/мин)", "допмин", "допмин 1"))
+  result <- add_col(result, data, "dobutamine", c("добутамин (0-нет, 1 - доза, мкг/кг/мин)", "добутамин"))
+  result <- add_col(result, data, "RRT", c("ЗПТ (0-нет, 1 - да, 2-несколько сеансов)", "ЗПТ"))
+  result <- add_col(result, data, "MV", c("длительность ИВЛ, часы", "ИВЛ", "продолжительность ИВЛ, часы"))
+  result <- add_col(result, data, "sepsis", c("сепсис (0-нет, 1 - да)", "сепсис"))
+  result <- add_col(result, data, "SOFA", c("SOFA макс", "SOFA"))
+
+  find_starts_with <- function(data, pattern) {
+    matches <- names(data)[stringr::str_detect(names(data), paste0("^", pattern))]
+    if (length(matches) > 0) return(data[[matches[1]]])
+    rep(NA_character_, nrow(data))
+  }
+
+  result$revasc_history <- find_starts_with(data, "реваскуляризация")
+  result$surgery <- find_starts_with(data, "ОПЕРАЦИЯ")
+  result$re_admission <- find_starts_with(data, "повторное поступление")
+  result$CBP <- find_starts_with(data, "ИК")
+
+  outcome_names <- c("исход  (завершение стац этапа)", "исход", "Исход")
+  result$outcome <- NA_character_
+  for (name in outcome_names) {
+    if (name %in% names(data)) {
+      result$outcome <- data[[name]]
+      break
+    }
+  }
+  if (all(is.na(result$outcome))) {
+    result$outcome <- find_starts_with(data, "исход")
+  }
+
+  death_names <- c("Лет-й исход", "летальный исход", "смерть")
+  result$death <- NA_character_
+  for (name in death_names) {
+    if (name %in% names(data)) {
+      result$death <- data[[name]]
+      break
+    }
+  }
+
+  result
+}
+
+# =========================
+# СБОР ВСЕХ ФАЙЛОВ
+# =========================
+all_data <- pmap(files, process_file) %>%
+  compact() %>%
+  bind_rows()
+
+# =========================
+# ФИНАЛЬНЫЙ ДАТАСЕТ
+# =========================
+final_dataset <- all_data %>%
+  mutate(
+    age = as.numeric(str_replace(age, ",", ".")),
+
+    across(
+      c(high, adrenaline, noradrenaline, dopamine, dobutamine, MV, SOFA),
+      ~ as.numeric(str_replace(.x, ",", "."))
+    ),
+
+    across(
+      c(sex, recordID, ICU_dur_exl, revasc_history, surgery, re_admission,
+        RRT, CBP, sepsis, death, outcome),
+      as.character
+    ),
+
+    high = ifelse(high > 100, high / 100, high),
+
+    year = as.character(year),
+    exl_sheet = as.character(exl_sheet),
+    exl_row = as.character(exl_row),
+
+    admissionDateTime = parse_dates(admissionDateTime),
+    ICU_EndDateTime = parse_dates(ICU_EndDateTime),
+
+    # !!! ключевое: для "окс база 2014-2016.xlsx" год берём из admissionDateTime
+    year = ifelse(is.na(year) | year == "", format(admissionDateTime, "%Y"), year),
+
+    patientID = paste(year, exl_sheet, exl_row, sep = "-"),
+
+    ICU_dur_calc = ifelse(
+      !is.na(admissionDateTime) & !is.na(ICU_EndDateTime) & ICU_EndDateTime > admissionDateTime,
+      floor(as.numeric(difftime(ICU_EndDateTime, admissionDateTime, units = "hours"))),
+      ICU_dur_exl
+    ),
+
+    vasopressors = case_when(
+      !is.na(adrenaline) & !is.na(noradrenaline) ~ adrenaline + noradrenaline,
+      !is.na(adrenaline) ~ adrenaline,
+      !is.na(noradrenaline) ~ noradrenaline,
+      TRUE ~ NA_real_
+    ),
+
+    inotropes = case_when(
+      !is.na(dopamine) & !is.na(dobutamine) ~ dopamine + dobutamine,
+      !is.na(dopamine) ~ dopamine,
+      !is.na(dobutamine) ~ dobutamine,
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  select(
+     patientID, # год - лист Excel - номер строки Excel
+    age,
+    high, # рост, м
+    sex,
+    recordID, # №ИБ (без указания года)
+    admissionDateTime, # дата (и время) госпитализации
+    ICU_EndDateTime, # дата (и время) перевода
+    ICU_dur_calc, # разность между "дата госпитализации" и "дата перевода"
+    ICU_dur_exl, #пребывание в орит, часы (как есть в Excel)
+    revasc_history, # реваскуляризация в анамнезе (0-нет, 1-АКШ, 2-ЧКВ, если АКШ+ЧКВ - 3, 4-неизвестно)
+    surgery, # ОПЕРАЦИЯ, название (включая БАП)
+    re_admission, # повторное поступление (0-нет, 1 - да)
+    vasopressors, # сумма адреналин и НА (0-нет, да - доза, мкг/кг/мин)
+    inotropes, # сумма допмин и добутамин (0-нет, да - доза, мкг/кг/мин)
+    RRT, # ЗПТ (0-нет, 1 - да, 2-несколько сеансов)
+    MV, # длительность ИВЛ, часы
+    CBP, # ИК как метод лечения ОСН (0-нет, 1-да)
+    sepsis,
+    SOFA, #SOFA макс
+    death, # летальный исход/смерть
+    outcome # исход
+  )
+
+# Сохранение
+saveRDS(final_dataset, "final_oks_dataset.rds")
+
+
+
+```
+
+You can add options to executable code like this
+
+```{r}
+#| echo: false
+2 * 2
+```
+
+The `echo: false` option disables the printing of code (only output is displayed).
